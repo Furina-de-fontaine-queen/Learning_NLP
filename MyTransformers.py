@@ -7,7 +7,7 @@ from torch.autograd import Variable
 import matplotlib.pyplot as plt 
 
 class Encoder(nn.Module):
-    '''
+    r'''
     整个encoder层.包含N个layers和最后的归一化输出
     ### Args:
         **layer (nn.Module):** 每一个encoder的layer
@@ -50,7 +50,7 @@ class EncoderDecoder(nn.Module):
     
 
 class Embeddings(nn.Module):
-    '''
+    r'''
     将batched词向量映射到为总词汇向量的一个向量.
 
     
@@ -108,7 +108,7 @@ class Embeddings(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    '''
+    r'''
     将词嵌入 (FloatTensor)进行位置编码,使模型能运用序列的位置信息
 
     ### **method:**
@@ -164,7 +164,7 @@ def clones(module,N:int)->nn.ModuleList:
     return nn.ModuleList([module for _ in range(N)])
 
 class LayerNorm(nn.Module):
-    '''
+    r'''
     层归一化模块,是每一层都满足~N(0,1),防止多层叠加导致的梯度爆炸,同时稳定反向传播
 
     ### Args:
@@ -188,7 +188,7 @@ class LayerNorm(nn.Module):
     
 
 class SublayerConnection(nn.Module):
-    '''
+    r'''
     残差连接 + LayerNorm
 
     ### Arg:
@@ -209,16 +209,13 @@ class SublayerConnection(nn.Module):
         return x + self.dropout(sublayer(self.norm(x)))
 
 def subsequent_mask(size):
-    '''
-    生成
-    '''
     attn_shape = (1,size,size)
     subsequent_mask = np.triu(np.ones(attn_shape),k=1).astype('uint8')
     return torch.from_numpy(subsequent_mask) == 0
 
 
 def attention(query,key,value,mask=None,dropout=None):
-    """
+    r"""
     实现缩放点积注意力机制
     
     ### Args:
@@ -299,7 +296,7 @@ def attention(query,key,value,mask=None,dropout=None):
     return torch.matmul(p_attn,value), p_attn
 
 class MultiHeadedAttention(nn.Module):
-    '''
+    r'''
     多头注意力机制。将d_model 又分为h个维度为d_model / h 的子空间，分别进行注意力计算
 
     ### Args:
@@ -346,7 +343,7 @@ class PositionwiseFeedForward(nn.Module):
         return self.w_2(self.dropout(F.relu(self.w_1(x))))
     
 class EncoderLayer(nn.Module):
-    '''
+    r'''
     结合子注意力函数与前馈神经网络,有两个子层,第一层使用子注意力函数,再将结果传给前馈神经网络
 
     ### Args:
@@ -373,7 +370,7 @@ class EncoderLayer(nn.Module):
 
 
 class Decoder(nn.Module):
-    '''
+    r'''
     整个decoder层.包含N个layers和最后的归一化输出
     ### Args:
         **layer (nn.Module):** 每一个decoder的layer
@@ -393,7 +390,7 @@ class Decoder(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    '''
+    r'''
     建立三个子层,完成一次decoder工作
 
     ### Args:
@@ -426,7 +423,7 @@ class DecoderLayer(nn.Module):
 
 
 class Generator(nn.Module):
-    '''建立由d_model维空间的向量到vocab_size维空间的映射参数矩阵,然后归一化为logits'''
+    r'''建立由d_model维空间的向量到vocab_size维空间的映射参数矩阵,然后归一化为logits'''
     def __init__(self,d_model,vocab_size):
         super(Generator,self).__init__() 
         self.proj = nn.Linear(d_model,vocab_size)
@@ -453,7 +450,7 @@ class Batch:
         self.src_mask = (src != pad).unsqueeze(-2)
         if trg is not None:
             self.trg = trg[:,:-1]
-            self.trg_y = trg[:,-1:]
+            self.trg_y = trg[:,1:]
             self.trg_mask = self.make_std_mask(self.trg,pad)
             self.ntokens = (self.trg_y != pad).data.sum()
 
@@ -480,8 +477,11 @@ def run_epoch(data_iter,model,loss_compute):
     return total_loss / total_tokens
 
 
-global max_src_in_batch, max_tgt_in_batch
+global max_src_in_batch, max_tgt_in_batch # 都是记录当前最长序列长度,包含<s>与</s>
 def batch_size_fn(new,count,sofar):
+    r'''
+    动态扩展批次并计算总token数
+    '''
     global max_src_in_batch, max_tgt_in_batch
     if count == 1:
         max_src_in_batch, max_tgt_in_batch = 0,0
@@ -490,3 +490,60 @@ def batch_size_fn(new,count,sofar):
     src_elements = count * max_src_in_batch
     tgt_elements = count * max_tgt_in_batch
     return max(src_elements,tgt_elements)
+
+class NoamOpt:
+    def __init__(self,model_size,factor,warmup,optimizer):
+        self.optimizer = optimizer
+        self._step = 0 
+        self.warmup = warmup
+        self.factor = factor
+        self.model_size = model_size 
+        self._rate = 0
+
+    def step(self):
+        self._step += 1
+        rate = self.rate() 
+        for p in self.optimizer.param_groups:
+            p['lr'] = rate 
+        self._rate = rate 
+        self.optimizer.step()
+
+    def rate(self,step=None):
+        if step is None:
+            step = self._step 
+        return self.factor * (self.model_size ** (-0.5)) * min(step ** (-0.5), step * self.warmup ** (-1.5))
+    
+def get_std_opt(model):
+    return NoamOpt(model_size=model.src_embed[0].d_model,
+                   factor=2,
+                   warmup=4000,
+                   optimizer=torch.optim.Adam(params=model.parameters(),
+                                              lr=0,
+                                              betas=(0.9,0.98),
+                                              eps=1e-9))
+
+class LabelSmoothing(nn.Module):
+    r'''
+    平滑函数,负责根据target将原本得到[0,..,1,...0]变为[0,x,..,confidence,..x],降低模型训练效果但是提高准确率.
+    处理后带入KLDivLoss中计算.注意predict值一定要对数处理
+    '''
+    def __init__(self,size,padding_idx,smoothing=0.0):
+        super(LabelSmoothing,self).__init__()
+        self.criterion = nn.KLDivLoss(size_average=False)
+        self.padding_idx = padding_idx
+        self.confidence = 1.0 - smoothing 
+        self.smoothing = smoothing
+        self.size = size 
+        self.true_dist = None 
+
+    def forward(self,x,target):
+        assert x.size(1) == self.size 
+        true_dist = x.data.clone()
+        true_dist.fill_(self.smoothing/(self.size -2))
+        true_dist.scatter_(1,target.data.unsqueeze(1),self.confidence)
+        true_dist[:,self.padding_idx] = 0
+        mask = torch.nonzero(target.data == self.padding_idx)
+        if mask.dim() > 0:
+            true_dist.index_fill_(0,mask.squeeze(),0.0)
+        self.true_dist = true_dist
+        return self.criterion(x,Variable(true_dist,requires_grad=False))
