@@ -438,9 +438,13 @@ def make_model(src_vocab, tgt_vocab, N = 6, d_model = 512, d_ff = 2048, h=8, dro
     position = PositionalEncoding(d_model,dropout)
     model = EncoderDecoder(Encoder(EncoderLayer(d_model,c(attn),c(ff),dropout),N),
                            Decoder(DecoderLayer(d_model,c(attn),c(attn),c(ff),dropout),N),
-                           nn.Sequential(Embeddings(d_model,src_vocab),c(position)),
-                           nn.Sequential(Embeddings(d_model,tgt_vocab),c(position)),
+                           nn.Sequential(Embeddings(src_vocab,d_model),c(position)),
+                           nn.Sequential(Embeddings(tgt_vocab,d_model),c(position)),
                            Generator(d_model,tgt_vocab))
+    # 初始化参数    
+    for p in model.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform_(p)
     return model
 
 
@@ -462,6 +466,7 @@ class Batch:
 
 
 def run_epoch(data_iter,model,loss_compute):
+    start = time.time()
     total_tokens = 0
     total_loss = 0
     tokens = 0
@@ -473,6 +478,9 @@ def run_epoch(data_iter,model,loss_compute):
         total_tokens +=batch.ntokens
         tokens += batch.ntokens
         if i % 50 == 1:
+            elapsed = time.time() - start
+            print('Epoch Step: %d Loss: %f Tokens per Sec: %f' % (i,loss / batch.ntokens,
+                                          tokens /  elapsed))
             tokens = 0
     return total_loss / total_tokens
 
@@ -529,7 +537,7 @@ class LabelSmoothing(nn.Module):
     '''
     def __init__(self,size,padding_idx,smoothing=0.0):
         super(LabelSmoothing,self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
+        self.criterion = nn.KLDivLoss(reduction='sum')
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing 
         self.smoothing = smoothing
@@ -540,10 +548,38 @@ class LabelSmoothing(nn.Module):
         assert x.size(1) == self.size 
         true_dist = x.data.clone()
         true_dist.fill_(self.smoothing/(self.size -2))
-        true_dist.scatter_(1,target.data.unsqueeze(1),self.confidence)
+        true_dist.scatter_(1,target.data.unsqueeze(1).long(),self.confidence)
         true_dist[:,self.padding_idx] = 0
         mask = torch.nonzero(target.data == self.padding_idx)
         if mask.dim() > 0:
             true_dist.index_fill_(0,mask.squeeze(),0.0)
         self.true_dist = true_dist
         return self.criterion(x,Variable(true_dist,requires_grad=False))
+    
+
+class SimpleLossCompute:
+    r'''
+    简单的损失计算函数,将预测值与target进行比较,计算损失并返回
+
+    ### Args:
+        **generator (nn.Module):** 生成器
+        **criterion (nn.Module):** 损失函数
+        **opt (NoamOpt):** 优化器
+
+    ### Method:
+        **forward(pred,target,ntokens):** 计算损失并返回
+    '''
+    def __init__(self,generator,criterion,opt=None):
+        self.generator = generator
+        self.criterion = criterion
+        self.opt = opt
+
+    def __call__(self,x,y,norm):
+        x = self.generator(x)
+        loss = self.criterion(x.contiguous().view(-1,x.size(-1)),
+                              y.contiguous().view(-1) / norm)
+        loss.backward()
+        if self.opt is not None:
+            self.opt.step()
+            self.opt.optimizer.zero_grad()
+        return loss.item() * norm
