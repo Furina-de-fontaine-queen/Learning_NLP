@@ -10,7 +10,7 @@ import torch.utils.checkpoint
 from packaging import version
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-from transformers import BertPreTrainedModel
+from transformers.modeling_utils import PreTrainedModel
 
 def auto_docstring(obj=None, *, custom_intro=None, custom_args=None, checkpoint=None):
     """
@@ -49,6 +49,31 @@ def auto_docstring(obj=None, *, custom_intro=None, custom_args=None, checkpoint=
 
     return auto_docstring_decorator
 
+r'''
+BERT 训练准备相关类
+'''
+
+class BertPreTrainedModel(PreTrainedModel):
+    def _init_weights(self,module):
+        if isinstance(module,nn.Linear):
+            module.weight.data.normal_(mean=0.0,
+                                       std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module,nn.Embedding):
+            module.weight.data.normal_(mean=0.0,
+                                       std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module,nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        elif isinstance(module,BertLMPredictionHead):
+            module.bias.data.zero_()
+
+r'''
+模型主体架构:
+'''
 class BertEmbeddings(nn.Module):
 
     def __init__(self,config):
@@ -748,7 +773,7 @@ class BertPredictionHeadTransform(nn.Module):
     def __init__(self,config):
         super().__init__() 
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        if isinstance(config.hidden_size,config.hidden_size):
+        if isinstance(config.hidden_act,str):
             self.transform_act_fn = ACT2FN[config.hidden_act]
         else:
             self.transform_act_fn = config.hidden_act 
@@ -989,3 +1014,4 @@ class BertForSequenceClassification(BertPreTrainedModel):
         
         return (loss,logits)
          
+
